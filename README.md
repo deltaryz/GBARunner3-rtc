@@ -6,7 +6,10 @@ This is an implementation of real-time clock support into GBARunner3 for DSi
 Tested with **Pokémon Ruby**, **Sapphire**, and **Emerald** on a Nintendo DSi
 system running TWiLightMenu++ v27.23.0 and nds-bootstrap v2.15.0.
 
-Time will advance as expected, including when the system is off.
+Creating and loading saves works, no battery error. Time will advance as
+expected, including when the system is off.
+
+_Compatibility with other games not verified._
 
 ## Build Instructions
 
@@ -84,8 +87,10 @@ This patch implements full S-3511A GPIO emulation:
 
 # DISCLAIMER
 
-This code was written 100% by Claude Sonnet via Claude Code. This is not a
+This code was written 100% by Claude Sonnet/Opus via Claude Code. This is not a
 human-authored implementation.
+
+I have not submitted a PR for this reason. Consider this a "proof of concept".
 
 While it has been functional for me in my limited testing, **USE AT YOUR OWN
 RISK**
