@@ -32,7 +32,7 @@
     .word memu_load16Pltt // 05
     .word memu_load16Vram012 // 06
     .word memu_load16Oam // 07
-    .word memu_load16Rom // 08
+    .word memu_load16RomHi // 08
     .word memu_load16Rom // 09
     .word memu_load16RomHi // 0A
     .word memu_load16RomHi // 0B

@@ -32,7 +32,7 @@
     .short memu_load16Pltt // 05
     .short memu_load16Vram012 // 06
     .short memu_load16Oam // 07
-    .short memu_load16Rom // 08
+    .short memu_load16RomHi // 08
     .short memu_load16Rom // 09
     .short memu_load16RomHi // 0A
     .short memu_load16RomHi // 0B

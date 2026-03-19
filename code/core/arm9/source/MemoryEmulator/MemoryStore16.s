@@ -130,6 +130,18 @@ arm_func memu_store16Oam
     bx lr
 
 arm_func memu_store16Rom
+    // Check for GPIO range: 0x080000C4 <= r8 <= 0x080000C8
+    ldr r11, =0x080000C4
+    sub r11, r8, r11        // r11 = r8 - 0x080000C4
+    cmp r11, #5             // in range if r11 < 5 (covers C4=0, C5=1, C6=2, C7=3, C8=4)
+    bhs memu_store16RomEnd  // not GPIO, ignore
+    push {r0-r3, lr}
+    mov r0, r8
+    mov r1, r9
+    ldr r10, =gpio_write16
+    blx r10
+    pop {r0-r3, lr}
+memu_store16RomEnd:
     bx lr
 
 arm_func memu_store16Sram

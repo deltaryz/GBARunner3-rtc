@@ -146,6 +146,22 @@ arm_func memu_load16Oam
     bx lr
 
 arm_func memu_load16RomHi
+    // Check for GPIO range: 0x080000C4 <= r8 <= 0x080000C8
+    ldr r11, =0x080000C4
+    sub r11, r8, r11        // r11 = r8 - 0x080000C4
+    cmp r11, #5             // in range if r11 < 5
+    bhs memu_load16RomHiNotGpio
+    push {r0-r3, lr}
+    mov r0, r8
+    ldr r10, =gpio_read16   // via register: no 32MB range limit
+    blx r10                 // returns u16 in r0
+    mov r9, r0
+    pop {r0-r3, lr}
+    tst r8, #1
+        bxeq lr
+    mov r9, r9, ror #8
+    bx lr
+memu_load16RomHiNotGpio:
     bic r9, r8, #0x06000000
 memu_load16RomHiContinue:
     ldr r11,= (sdc_romBlockToCacheBlock - (0x08000000 >> (SDC_BLOCK_SHIFT - 2)))
