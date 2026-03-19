@@ -26,3 +26,12 @@ void sysipc_setBottomBacklight(bool enabled)
     while (ipc_isRecvFifoEmpty());
     ipc_recvWordDirect();
 }
+
+void sysipc_getDatetime(gba_rtc_time_t* dst)
+{
+    // Pass 32-byte-aligned pointer as ptr>>5.
+    // ARM7 handler recovers as (data>>4)<<5 == ptr.
+    sendSystemIpcMessage(SYSTEM_IPC_CMD_GET_DATETIME, (u32)dst >> 5);
+    while (ipc_isRecvFifoEmpty());
+    ipc_recvWordDirect();
+}
