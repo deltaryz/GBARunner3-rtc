@@ -46,44 +46,51 @@ TWiLightMenu++ should now be able to run .gba roms directly with working RTC.
 
 ## Technical Details
 
-Pokemon Ruby/Sapphire/Emerald access a Seiko S-3511A real-time clock via GBA
-GPIO registers at 0x080000C4-0x080000C8. Without this hardware, the games
-display "The internal battery has run dry" on every boot and time-based events
-(berry growth, tides, etc.) do not function.
+GBA games that use real-time hardware access a Seiko S-3511A clock via GPIO
+registers at 0x080000C4-0x080000C8. Without this hardware, time-dependent games
+display errors like "The internal battery has run dry" and time-based events
+(berry growth, tides, day/night cycles) do not function.
 
-This patch implements full S-3511A GPIO emulation:
+This patch implements full S-3511A GPIO emulation with two-mode time tracking:
 
-- GbaRtcTime.h: shared BCD time struct passed via IPC
-- GbaGpio.h/.c: complete S-3511A serial state machine
+**Files added/modified:**
+
+- `GbaRtcTime.h`: shared packed BCD datetime struct for ARM7/ARM9 IPC
+- `GbaRtcCalendar.c`: BCD↔decimal conversion and calendar math helpers
+  (split into a separate translation unit to avoid a link-order issue
+  that causes vrama overflow when added to GbaGpio.c directly)
+- `GbaGpio.h/.c`: complete S-3511A serial state machine
   - GPIO state struct placed in DTCM for fast access
   - All logic in EWRAM section (avoids ITCM size constraints)
-  - Handles CS/SCK/SIO edge detection, MSB-first command reception, LSB-first
-    data exchange, 7-byte datetime, 3-byte time, and 1-byte control register
-    commands
-  - On each DATETIME or TIME read command, issues a live sysipc_getDatetime()
-    call to ARM7 before clocking out the response, so the in-game clock advances
-    in real time rather than serving a frozen boot-time snapshot
-  - Uses a 32-byte-aligned EWRAM BSS buffer for the IPC refresh (required by the
+  - Handles CS/SCK/SIO edge detection, command reception, and LSB-first
+    data exchange for 7-byte datetime, 3-byte time, and 1-byte control
+    register commands
+  - **Two-mode time model:**
+    - *Passthrough* (default, `rtcTimeSet = false`): reads forward DS
+      system clock directly — works for Pokémon RSE and any read-only
+      RTC game
+    - *Offset mode* (activated on first write): records
+      `rtcOffset = game_written_seconds − ds_seconds` at write time;
+      every subsequent read returns `ds_seconds + rtcOffset` so the
+      clock advances in real time from whatever the game set — handles
+      games like Rockman EXE that write time at startup (see mGBA #240)
+  - Uses a 32-byte-aligned EWRAM BSS buffer for IPC (required by the
     ARM7 pointer encoding scheme)
-- SystemIpcCommand.h: add SYSTEM_IPC_CMD_GET_DATETIME
-- arm7 SystemIpcService.cpp: new IPC handler reads DS hardware RTC via
-  rtc_readDateTime() and writes raw BCD into the ARM9-supplied buffer (pointer
-  recovered as (data>>4)<<5)
-- arm9 SystemIpc.h/.cpp: sysipc_getDatetime(ptr) sends ptr>>5 as IPC payload and
-  waits for ARM7 acknowledgement. SystemIpc.h gains extern "C" guards so the C++
-  symbol is reachable from GbaGpio.c (a C translation unit)
-- main.cpp: at boot, fetch DS time via IPC then gpio_init() before EWRAM is
-  zeroed (sRtcTime is 32-byte aligned)
-- MemoryStore16.s: intercept writes to 0x080000C4-C8 in memu_store16Rom; use
-  register-indirect BLX since ITCM to EWRAM exceeds the 32MB BL range limit
-- MemoryLoadStoreTables.s + MemoryLoadStoreWordTables.s: reroute load16 dispatch
-  entry 0x08 from memu_load16Rom to memu_load16RomHi (which contains the GPIO
-  read intercept). Direct modification of memu_load16Rom was not possible as the
-  linker script constrains MemoryLoadRom.o to 112 bytes. The bic
-  r9,r8,#0x06000000 in memu_load16RomHi is a no-op for 0x08-range addresses
-  (bits 25:24 are already zero).
-- MemoryLoad16.s: memu_load16RomHi intercepts reads from 0x080000C4-C8 and
-  returns virtual pin state from GPIO struct
+- `SystemIpcCommand.h`: adds `SYSTEM_IPC_CMD_GET_DATETIME`
+- `arm7 SystemIpcService.cpp`: IPC handler reads DS RTC via
+  `rtc_readDateTime()` and writes BCD into the ARM9-supplied buffer
+  (pointer recovered as `(data>>4)<<5`)
+- `arm9 SystemIpc.h/.cpp`: `sysipc_getDatetime(ptr)` sends `ptr>>5` as
+  IPC payload and waits for ARM7 acknowledgement; `extern "C"` guards
+  allow the C++ symbol to be linked from GbaGpio.c
+- `main.cpp`: fetches DS time via IPC then calls `gpio_init()` at boot
+- `MemoryStore16.s`: intercepts writes to 0x080000C4-C8; uses
+  register-indirect BLX (ITCM→EWRAM exceeds the 32 MB BL range limit)
+- `MemoryLoadStoreTables.s` + `MemoryLoadStoreWordTables.s`: reroutes
+  load16 dispatch entry 0x08 to `memu_load16RomHi` (which contains the
+  GPIO read intercept)
+- `MemoryLoad16.s`: `memu_load16RomHi` intercepts reads from
+  0x080000C4-C8 and returns virtual pin state from the GPIO struct
 
 # DISCLAIMER
 
