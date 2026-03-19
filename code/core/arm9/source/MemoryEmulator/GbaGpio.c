@@ -29,6 +29,12 @@
 
 static const int RTC_BYTES[8] = { 0, 0, 7, 0, 1, 0, 3, 0 };
 
+// ---- calendar helpers (defined in GbaRtcCalendar.c) ------------------
+extern u8  rtcBcdToDec(u8 bcd);
+extern u8  rtcDecToBcd(u8 dec);
+extern u32 rtcToSeconds(const u8 t[7]);
+extern void rtcFromSeconds(u32 secs, u8 t[7]);
+
 // ---- state (placed in DTCM for fast access) --------------------------
 
 typedef struct
@@ -52,6 +58,8 @@ typedef struct
     int  bytesRemaining;
     u8   rtcTime[7];    ///< BCD: year,month,day,weekDay,hour,min,sec
     u8   rtcControl;    ///< RTC control register
+    bool rtcTimeSet;    ///< true if game wrote time (use offset mode on reads)
+    s32  rtcOffset;     ///< seconds: game_written_time - ds_time at write moment
 } GpioState;
 
 static GpioState sGpio __attribute__((section(".dtcm")));
@@ -59,7 +67,42 @@ static GpioState sGpio __attribute__((section(".dtcm")));
 // 32-byte-aligned buffer for live RTC refresh via IPC
 static gba_rtc_time_t sRtcRefreshBuf __attribute__((section(".ewram.bss"), aligned(32)));
 
-// ---- helpers ---------------------------------------------------------
+/// Refresh rtcTime[] from DS RTC, applying offset if game has written time.
+static __attribute__((section(".ewram"))) void rtcRefreshForRead(void)
+{
+    sysipc_getDatetime(&sRtcRefreshBuf);
+
+    if (!sGpio.rtcTimeSet)
+    {
+        // No game write yet -- pass DS time through directly
+        sGpio.rtcTime[0] = sRtcRefreshBuf.year;
+        sGpio.rtcTime[1] = sRtcRefreshBuf.month;
+        sGpio.rtcTime[2] = sRtcRefreshBuf.day;
+        sGpio.rtcTime[3] = sRtcRefreshBuf.weekDay;
+        sGpio.rtcTime[4] = sRtcRefreshBuf.hour;
+        sGpio.rtcTime[5] = sRtcRefreshBuf.minute;
+        sGpio.rtcTime[6] = sRtcRefreshBuf.second;
+    }
+    else
+    {
+        // Offset mode: game_time = ds_time + offset
+        u8 dsBcd[7];
+        dsBcd[0] = sRtcRefreshBuf.year;
+        dsBcd[1] = sRtcRefreshBuf.month;
+        dsBcd[2] = sRtcRefreshBuf.day;
+        dsBcd[3] = sRtcRefreshBuf.weekDay;
+        dsBcd[4] = sRtcRefreshBuf.hour;
+        dsBcd[5] = sRtcRefreshBuf.minute;
+        dsBcd[6] = sRtcRefreshBuf.second;
+
+        s32 adjusted = (s32)rtcToSeconds(dsBcd) + sGpio.rtcOffset;
+        if (adjusted < 0) adjusted = 0;
+        rtcFromSeconds((u32)adjusted, sGpio.rtcTime);
+        sGpio.rtcTime[3] = sRtcRefreshBuf.weekDay; // preserve DS weekday
+    }
+}
+
+// ---- GPIO / RTC helpers ----------------------------------------------
 
 static __attribute__((section(".ewram"))) void outputPins(u8 pins)
 {
@@ -100,23 +143,17 @@ static __attribute__((section(".ewram"))) void rtcBeginCommand(void)
     sGpio.bytesRemaining = RTC_BYTES[command];
     sGpio.commandActive = 1;
 
-    // For DATETIME/TIME reads, refresh from DS RTC so time advances during gameplay
+    // For DATETIME/TIME reads, refresh from DS RTC (with offset if applicable)
     if ((cmd & 0x80) && (command == RTC_CMD_DATETIME || command == RTC_CMD_TIME))
     {
-        sysipc_getDatetime(&sRtcRefreshBuf);
-        sGpio.rtcTime[0] = sRtcRefreshBuf.year;
-        sGpio.rtcTime[1] = sRtcRefreshBuf.month;
-        sGpio.rtcTime[2] = sRtcRefreshBuf.day;
-        sGpio.rtcTime[3] = sRtcRefreshBuf.weekDay;
-        sGpio.rtcTime[4] = sRtcRefreshBuf.hour;
-        sGpio.rtcTime[5] = sRtcRefreshBuf.minute;
-        sGpio.rtcTime[6] = sRtcRefreshBuf.second;
+        rtcRefreshForRead();
     }
 
     switch (command)
     {
         case RTC_CMD_RESET:
             sGpio.rtcControl = 0;
+            sGpio.rtcTimeSet = false;
             break;
         default:
             break;
@@ -133,6 +170,34 @@ static __attribute__((section(".ewram"))) void rtcProcessByte(void)
     {
         case RTC_CMD_CONTROL:
             sGpio.rtcControl = (u8)sGpio.bits;
+            break;
+        case RTC_CMD_DATETIME:
+        case RTC_CMD_TIME:
+            // Store game-written time byte
+            sGpio.rtcTime[7 - sGpio.bytesRemaining] = (u8)sGpio.bits;
+            // On last byte: compute offset so future reads advance from this time
+            if (sGpio.bytesRemaining == 1)
+            {
+                sysipc_getDatetime(&sRtcRefreshBuf);
+                u8 dsBcd[7];
+                dsBcd[0] = sRtcRefreshBuf.year;
+                dsBcd[1] = sRtcRefreshBuf.month;
+                dsBcd[2] = sRtcRefreshBuf.day;
+                dsBcd[3] = sRtcRefreshBuf.weekDay;
+                dsBcd[4] = sRtcRefreshBuf.hour;
+                dsBcd[5] = sRtcRefreshBuf.minute;
+                dsBcd[6] = sRtcRefreshBuf.second;
+                // For TIME writes (3 bytes = h,m,s only), fill date from DS RTC
+                if (command == RTC_CMD_TIME)
+                {
+                    sGpio.rtcTime[0] = dsBcd[0];
+                    sGpio.rtcTime[1] = dsBcd[1];
+                    sGpio.rtcTime[2] = dsBcd[2];
+                    sGpio.rtcTime[3] = dsBcd[3];
+                }
+                sGpio.rtcOffset = (s32)rtcToSeconds(sGpio.rtcTime) - (s32)rtcToSeconds(dsBcd);
+                sGpio.rtcTimeSet = true;
+            }
             break;
         default:
             break;
@@ -238,6 +303,8 @@ void gpio_init(const gba_rtc_time_t* time)
     sGpio.rtcCommand    = 0;
     sGpio.bytesRemaining = 0;
     sGpio.rtcControl    = 0x40; // 24-hour mode
+    sGpio.rtcTimeSet    = false;
+    sGpio.rtcOffset     = 0;
 
     sGpio.rtcTime[0] = time->year;
     sGpio.rtcTime[1] = time->month;
