@@ -45,6 +45,8 @@
 #include "MemoryEmulator/Arm/ArmDispatchTable.h"
 #include "VirtualMachine/VMUndefinedArmTable.h"
 #include "MemoryEmulator/HiCodeCacheMapping.h"
+#include "MemoryEmulator/GbaGpio.h"
+#include "SystemIpc.h"
 #include "VirtualMachine/VMNestedIrq.h"
 #include "arm9Clock.h"
 
@@ -499,6 +501,13 @@ extern "C" void gbaRunnerMain(int argc, char* argv[])
     }
     loadGameSpecificSettings();
     handleSave(romPath);
+
+    {
+        // Fetch current time from ARM7 RTC and initialise GPIO emulator.
+        [[gnu::section(".ewram.bss"), gnu::aligned(32)]] static gba_rtc_time_t sRtcTime;
+        sysipc_getDatetime(&sRtcTime);
+        gpio_init(&sRtcTime);
+    }
     SelfModifyingPatches().ApplyPatches(gAppSettingsService.GetAppSettings().runSettings);
 
     waitSplashScreenAnimation();
